@@ -15,16 +15,22 @@ from torchvision.models import resnet50
 import matplotlib.pyplot as plt
 import numpy as np
 
+# from datetime import datetime
+
 from helper_functions import plot_classes_preds
 
 
-VALIDATION_SIZE = 0.15
-BATCH_SIZE = 64
+INPUT_SIZE = 256
 PROGRESS_EVERY = 5
-ACCURACY_IN_EPOCH = 5
-EPOCHS = 50
+ACCURACY_IN_EPOCH = 4
+MODEL_NAME = f'resnet50-medium_dataset-with_reduce_lr_on_plateau-scheduler-100epochs'
 
-writer = SummaryWriter(comment=f'-BATCH_SIZE={BATCH_SIZE}-EPOCHS={EPOCHS}')
+VALIDATION_SIZE = 0.15
+BATCH_SIZE = 32
+EPOCHS = 100
+FIRST_LR = 0.002
+
+writer = SummaryWriter(comment=f'-BATCH_SIZE={BATCH_SIZE}-EPOCHS={EPOCHS}-LR={FIRST_LR}')
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 torch.cuda.set_device(device)
@@ -33,13 +39,16 @@ torch.cuda.empty_cache()
 
 classes = ['airplane', 'bird', 'building', 'deer', 'dog', 'frog', 'horse', 'ship', 'sportscar', 'truck']
 
-transform = transforms.Compose(
-    [transforms.ToTensor()
-     ])
+transform = transforms.Compose([
+        transforms.RandomRotation(25),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor()
+    ])
 
 dataset = ImageFolder(root="data/", transform=transform)
+# dataset = ImageFolder(root="fast_images/", transform=transform)
 
-print('Dataset loaded')
+print(f'Dataset loaded: {len(dataset)} photos')
 
 dataset_size = len(dataset)
 indices = list(range(dataset_size))
@@ -113,10 +122,13 @@ class Net(nn.Module):
         x = self.linear_layers(x)
         return x
 
-model = Net()
-# model = resnet50(False)
+# model = Net()
+model = resnet50(False)
+model.fc = nn.Linear(2048, 10, bias=True)
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=0.003)
+optimizer = optim.Adam(model.parameters(), lr=FIRST_LR)
+# scheduler = optim.lr_scheduler.MultiStepLR(optimizer, [10, 35])
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.2)
 print(model)
 
 if torch.cuda.is_available():
@@ -126,10 +138,15 @@ if torch.cuda.is_available():
 
 print('Net created')
 
-accuracy_batchess = np.linspace(0, len(train_loader), num=ACCURACY_IN_EPOCH, endpoint=False, dtype=np.int)
+accuracy_batchess = np.linspace(0, len(train_loader) - 1, num=ACCURACY_IN_EPOCH + 1, dtype=np.int)[1:]
 
+# Switch to check validation loss in scheduler and check validation data on last batch instead of first
+
+best_accuracy = 0.0
 for epoch in range(EPOCHS):
+    epoch_loss = 0.0
     running_loss = 0.0
+    running_corrects = 0.0
     for i, data in enumerate(train_loader, 0):
         images, labels = data
 
@@ -141,25 +158,38 @@ for epoch in range(EPOCHS):
         # writer.add_image('images', grid, 0)
         # writer.add_graph(model, images)
 
+        # exit()
+
         optimizer.zero_grad()
         outputs = model(images)
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
 
-        running_loss += loss.item()
+        _, predicted = torch.max(outputs.cpu().data, 1)
 
-        if i % PROGRESS_EVERY == 0:
-            print(f'Epoch: {epoch}, batch: {i}, loss: {running_loss / PROGRESS_EVERY : .3f}')
+        running_loss += loss.item()
+        epoch_loss += loss.item()
+        running_corrects += torch.sum(labels.cpu().data == predicted)
+
+        if i % PROGRESS_EVERY == PROGRESS_EVERY - 1:
+            print(f'Epoch: {epoch}, batch: {i + 1}, loss: {running_loss / PROGRESS_EVERY : .3f}, ' +
+             f'accuracy: {100 * running_corrects / (BATCH_SIZE * PROGRESS_EVERY)}%')
             # ...log the running loss
-            writer.add_scalar('training loss',
+            writer.add_scalar('Loss/train',
                             running_loss / PROGRESS_EVERY,
-                            (i + epoch * len(train_loader)))
+                            i * BATCH_SIZE + epoch * len(train_loader.dataset))
+            
+            writer.add_scalar('Accuracy/train',
+                            100 * running_corrects / (BATCH_SIZE * PROGRESS_EVERY),
+                            i * BATCH_SIZE + epoch * len(train_loader.dataset)) 
 
             running_loss = 0.0
+            running_corrects = 0.0
 
         if i in accuracy_batchess:
             correct = 0
+            loss = 0.0
             total = 0
             with torch.no_grad():
                 for data in validation_loader:
@@ -170,14 +200,29 @@ for epoch in range(EPOCHS):
 
                     outputs = model(images)
                     _, predicted = torch.max(outputs.cpu().data, 1)
+
+                    loss += criterion(outputs, labels).item()
                     total += labels.size(0)
                     correct += (predicted == labels.cpu()).sum().item()
 
-                writer.add_scalar('Accuracy',
+                writer.add_scalar('Accuracy/test',
                                 100 * correct / total,
-                                i + epoch * len(train_loader))
+                                i * BATCH_SIZE + epoch * len(validation_loader.dataset))
 
-                print(f'Accuracy: {100 * correct / total : .3f}%')
+                writer.add_scalar('Loss/test',
+                                loss / len(validation_loader),
+                                i * BATCH_SIZE + epoch * len(validation_loader.dataset))
 
+                print(f'TEST Loss: {loss / len(validation_loader)}, Accuracy: {100 * correct / total : .3f}%')
+
+            if i == accuracy_batchess[-1]:
+                acc = 100 * correct / total
+                if acc > best_accuracy:
+                best_accuracy = acc
+                torch.save(model, 'models/' + MODEL_NAME)
+                print(f'Saving best yet model - {acc:.3f}% accuracy')
+
+    epoch_loss = epoch_loss / len(train_loader)
+    scheduler.step(epoch_loss)
         
 writer.close()

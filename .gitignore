@@ -3,3 +3,5 @@
 /data
 /fast_images
 /__pycache__
+/big_dataset
+/models
