@@ -21,14 +21,14 @@ from helper_functions import plot_classes_preds
 
 
 INPUT_SIZE = 256
-PROGRESS_EVERY = 5
+PROGRESS_EVERY = 50
 ACCURACY_IN_EPOCH = 4
-MODEL_NAME = f'resnet50-medium_dataset-with_reduce_lr_on_plateau-scheduler-100epochs'
+MODEL_NAME = f'resnet50-big_dataset-with_reduce_lr_on_plateau-scheduler-150epochs'
 
 VALIDATION_SIZE = 0.15
 BATCH_SIZE = 32
-EPOCHS = 100
-FIRST_LR = 0.002
+EPOCHS = 150
+FIRST_LR = 0.0023
 
 writer = SummaryWriter(comment=f'-BATCH_SIZE={BATCH_SIZE}-EPOCHS={EPOCHS}-LR={FIRST_LR}')
 
@@ -45,7 +45,8 @@ transform = transforms.Compose([
         transforms.ToTensor()
     ])
 
-dataset = ImageFolder(root="data/", transform=transform)
+dataset = ImageFolder(root="big_dataset/", transform=transform)
+# dataset = ImageFolder(root="data/", transform=transform)
 # dataset = ImageFolder(root="fast_images/", transform=transform)
 
 print(f'Dataset loaded: {len(dataset)} photos')
@@ -143,6 +144,7 @@ accuracy_batchess = np.linspace(0, len(train_loader) - 1, num=ACCURACY_IN_EPOCH 
 # Switch to check validation loss in scheduler and check validation data on last batch instead of first
 
 best_accuracy = 0.0
+best_loss = 500000
 for epoch in range(EPOCHS):
     epoch_loss = 0.0
     running_loss = 0.0
@@ -216,11 +218,14 @@ for epoch in range(EPOCHS):
                 print(f'TEST Loss: {loss / len(validation_loader)}, Accuracy: {100 * correct / total : .3f}%')
 
             if i == accuracy_batchess[-1]:
+                loss = loss / len(validation_loader)
                 acc = 100 * correct / total
-                if acc > best_accuracy:
-                best_accuracy = acc
-                torch.save(model, 'models/' + MODEL_NAME)
-                print(f'Saving best yet model - {acc:.3f}% accuracy')
+                # if acc > best_accuracy:
+                if loss < best_loss:
+                    best_loss = loss
+                    # torch.save(model, 'models/' + MODEL_NAME)
+                    torch.save(model.state_dict(), 'models/' + MODEL_NAME + '-state_dict')
+                    print(f'Saving best yet model - {acc:.3f}% accuracy - {loss:.3f} loss')
 
     epoch_loss = epoch_loss / len(train_loader)
     scheduler.step(epoch_loss)
